@@ -8,4 +8,4 @@ COPY ./src /app/src
 
 WORKDIR /app
 
-CMD ["python", "-m", "src"]
+CMD ["python", "-u", "-m", "src"]
