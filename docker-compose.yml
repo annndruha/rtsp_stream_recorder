@@ -1,0 +1,10 @@
+services:
+  rtsp_stream_recorder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtsp_stream_recorder
+    restart: always
+    volumes:
+      - ./data:/app/data
+      - ./settings.json:/app/settings.json
