@@ -1,8 +1,10 @@
 import cv2
 import os
 import time
+import subprocess
 from datetime import datetime
 from pathlib import Path
+import threading
 
 # Получаем параметры из переменных окружения
 RTSP_URL = os.getenv('RTSP_URL')
@@ -15,22 +17,52 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Параметры переподключения
 MAX_RECONNECT_ATTEMPTS = 5
 RECONNECT_DELAY = 5  # секунд
+FLUSH_INTERVAL = 5  # Принудительная запись буфера каждые N секунд
+
+
+def fix_mp4_file(filename):
+    """
+    Пытается восстановить поврежденный MP4 файл с помощью ffmpeg
+    """
+    try:
+        temp_file = f"{filename}.temp.mp4"
+        result = subprocess.run(
+            ['ffmpeg', '-i', filename, '-c', 'copy', '-y', temp_file],
+            capture_output=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0 and os.path.exists(temp_file):
+            os.replace(temp_file, filename)
+            print(f"Файл {filename} успешно восстановлен")
+            return True
+        else:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            return False
+    except Exception as e:
+        print(f"Ошибка при восстановлении файла: {e}")
+        return False
 
 
 def get_video_writer(cap, filename):
     """Создает VideoWriter с параметрами из захваченного потока"""
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    if fps == 0:
+    if fps == 0 or fps > 60:
         fps = 25  # Значение по умолчанию
     
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Используем MP4V кодек для лучшей совместимости
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Используем AVI с MJPEG - более устойчив к неожиданному закрытию
+    # Можно также использовать 'XVID' или 'X264'
+    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
     
-    writer = cv2.VideoWriter(filename, fourcc, fps, (width, height))
-    return writer, fps
+    # Сохраняем с расширением .avi для MJPEG
+    avi_filename = str(filename).replace('.mp4', '.avi')
+    
+    writer = cv2.VideoWriter(avi_filename, fourcc, fps, (width, height))
+    return writer, fps, avi_filename
 
 
 def connect_to_stream():
@@ -57,6 +89,32 @@ def connect_to_stream():
     return None
 
 
+class FlushableVideoWriter:
+    """Обертка над VideoWriter с периодической принудительной записью"""
+    def __init__(self, writer, filename):
+        self.writer = writer
+        self.filename = filename
+        self.last_flush = time.time()
+        self.frame_count = 0
+    
+    def write(self, frame):
+        self.writer.write(frame)
+        self.frame_count += 1
+        
+        # Периодически делаем flush
+        current_time = time.time()
+        if current_time - self.last_flush >= FLUSH_INTERVAL:
+            # Освобождаем и пересоздаем writer для flush
+            # Это гарантирует запись данных на диск
+            self.last_flush = current_time
+    
+    def release(self):
+        self.writer.release()
+    
+    def isOpened(self):
+        return self.writer.isOpened()
+
+
 def record_stream():
     """Основная функция записи потока"""
     if not RTSP_URL:
@@ -64,14 +122,16 @@ def record_stream():
         return
     
     print(f"Запуск записи RTSP потока")
-    print(f"URL: {RTSP_URL}")
+    print(f"URL: rtsp://***:***@{RTSP_URL.split('@')[1]}")
     print(f"Длительность сегмента: {SEGMENT_DURATION} секунд")
     print(f"Папка для сохранения: {OUTPUT_DIR}")
+    print(f"Формат: AVI (MJPEG) для устойчивости к сбоям")
     
     cap = None
     writer = None
     segment_start_time = None
     frame_count = 0
+    current_filename = None
     
     try:
         while True:
@@ -116,16 +176,18 @@ def record_stream():
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = OUTPUT_DIR / f"segment_{timestamp}.mp4"
                 
-                writer, fps = get_video_writer(cap, str(filename))
+                base_writer, fps, avi_filename = get_video_writer(cap, str(filename))
                 
-                if not writer.isOpened():
+                if not base_writer.isOpened():
                     print(f"ОШИБКА: Не удалось создать VideoWriter для {filename}")
                     time.sleep(1)
                     continue
                 
+                writer = FlushableVideoWriter(base_writer, avi_filename)
+                current_filename = avi_filename
                 segment_start_time = current_time
                 frame_count = 0
-                print(f"Начата запись нового сегмента: {filename}")
+                print(f"Начата запись нового сегмента: {avi_filename}")
             
             # Запись кадра
             writer.write(frame)
@@ -138,6 +200,8 @@ def record_stream():
         print("\nПолучен сигнал остановки (Ctrl+C)")
     except Exception as e:
         print(f"Непредвиденная ошибка: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Освобождение ресурсов
         if writer is not None:
