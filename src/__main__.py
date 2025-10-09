@@ -2,7 +2,7 @@ import cv2
 import os
 import time
 import subprocess
-from datetime import datetime
+import datetime
 from pathlib import Path
 import threading
 
@@ -20,29 +20,10 @@ RECONNECT_DELAY = 5  # секунд
 FLUSH_INTERVAL = 5  # Принудительная запись буфера каждые N секунд
 
 
-def fix_mp4_file(filename):
-    """
-    Пытается восстановить поврежденный MP4 файл с помощью ffmpeg
-    """
-    try:
-        temp_file = f"{filename}.temp.mp4"
-        result = subprocess.run(
-            ['ffmpeg', '-i', filename, '-c', 'copy', '-y', temp_file],
-            capture_output=True,
-            timeout=30
-        )
-        
-        if result.returncode == 0 and os.path.exists(temp_file):
-            os.replace(temp_file, filename)
-            print(f"Файл {filename} успешно восстановлен")
-            return True
-        else:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-            return False
-    except Exception as e:
-        print(f"Ошибка при восстановлении файла: {e}")
-        return False
+def datetime_now_str():
+    delta = datetime.timedelta(hours = 3) # MoscowUTC
+    tzone = datetime.timezone(delta)
+    return datetime.datetime.strftime(datetime.datetime.now(tzone), '%H_%M_%S')
 
 
 def get_video_writer(cap, filename):
@@ -173,8 +154,8 @@ def record_stream():
                     print(f"Сегмент завершен. Записано кадров: {frame_count}")
                 
                 # Создаем новый файл
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = OUTPUT_DIR / f"segment_{timestamp}.mp4"
+                timestamp = datetime_now_str()
+                filename = OUTPUT_DIR / f"{timestamp}.mp4"
                 
                 base_writer, fps, avi_filename = get_video_writer(cap, str(filename))
                 
